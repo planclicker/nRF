@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>🎧 nRF24 Universal Sweeper v3.0</title>
+  <meta name="viewport" content="width=device-width">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { font-family: system-ui, sans-serif; margin: 0; padding: 0; }
+    body { background: #0a0a0a; color: #fff; padding: 20px; }
+    .card { background: #1a1a1a; border-radius: 12px; padding: 20px; margin: 10px 0; }
+    button { background: #ff6b35; border: none; padding: 12px 24px; border-radius: 8px; color: white; cursor: pointer; font-size: 16px; margin: 5px; }
+    button:hover { background: #e55a2b; }
+    button.active { background: #00ff88 !important; }
+    .device { background: #2a2a2a; padding: 15px; margin: 10px 0; border-radius: 8px; border-left: 4px solid #ff6b35; }
+    .device.active { border-left-color: #00ff88; box-shadow: 0 0 20px #00ff88; }
+    #packets { max-height: 400px; overflow: auto; }
+    .status { font-size: 12px; opacity: 0.7; }
+    input { background: #333; border: 1px solid #555; color: white; padding: 8px; border-radius: 4px; }
+    canvas { max-height: 300px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🎧 nRF24 Universal Sweeper</h1>
+    <p>Controls: AirPods • RC Cars • Drones • Smart Locks • Toys (2km+ range)</p>
+    
+    <!-- NODE DISCOVERY -->
+    <div>
+      <button onclick="discoverNodes()">🔍 Discover Nodes</button>
+      <button onclick="connectNode()">📡 Connect Node</button>
+      <span id="status">Ready</span>
+    </div>
+    
+    <!-- CONTROLS -->
+    <div style="margin: 20px 0;">
+      <button onclick="toggleForceSweep()">⚡ Force Sweep <span id="forceStatus">OFF</span></button>
+      <button onclick="clearAll()">🗑️ Clear All</button>
+      <button onclick="exportDevices()">💾 Export Devices</button>
+    </div>
+  </div>
+
+  <!-- LIVE PACKETS -->
+  <div class="card">
+    <h3>📡 Live Packets (Last 100)</h3>
+    <div id="packets"></div>
+  </div>
+
+  <!-- DISCOVERED DEVICES -->
+  <div class="card">
+    <h3>🎯 Discovered Devices (<span id="deviceCount">0</span>)</h3>
+    <div id="deviceList"></div>
+  </div>
+
+  <!-- RSSI HEATMAP -->
+  <div class="card">
+    <h3>📊 RSSI Heatmap</h3>
+    <canvas id="rssiChart"></canvas>
+  </div>
+
+  <!-- PRESETS -->
+  <div class="card">
+    <h3>🎮 Quick Presets</h3>
+    <button onclick="preset('airpods')">🎧 AirPods Connect</button>
+    <button onclick="preset('rccar')">🚗 RC Car Forward</button>
+    <button onclick="preset('drone')">🚁 Drone Takeoff</button>
+    <button onclick="preset('lock')">🔓 Smart Lock</button>
+    <button onclick="preset('led')">💡 LED Toggle</button>
+  </div>
+
+  <script>
+    // STATE
+    let nodes = [];
+    let packets = [];
+    let devices = [];
+    let currentNode = null;
+    let forceSweep = false;
+    let rssiChart;
+
+    // CHARTS
+    const ctx = document.getElementById('rssiChart').getContext('2d');
+    rssiChart = new Chart(ctx, {
+      type: 'line',
+      data: { labels: [], datasets: [{ label: 'RSSI', data: [], borderColor: '#00ff88', tension: 0.4 }] },
+      options: { scales: { y: { min: -100, max: 0 } } }
+    });
+
+    // NETWORK DISCOVERY (ALL ranges)
+    async function discoverNodes() {
+      document.getElementById('status').textContent = '🔍 Scanning network...';
+      
+      const ranges = [
+        '192.168.', '10.', '172.16.', '172.17.', '172.18.', '172.19.',
+        '100.', '169.254.'  // More ranges
+      ];
+      
+      nodes = [];
+      for (let range of ranges) {
+        for (let i = 1; i <= 254; i++) {
+          try {
+            const ip = `${range}${i}`;
+            const res = await Promise.race([
+              fetch(`${ip}/scan`, { timeout: 1000 }),
+              new Promise((_, reject) => setTimeout(() => reject(), 1000))
+            ]);
+            if (res.ok) {
+              const data = await res.json();
+              nodes.push({ ip, name: data.node || ip, packets: data.nrf_packets });
+            }
+          } catch(e) {}
+        }
+      }
+      
+      updateNodeList();
+      document.getElementById('status').textContent = `Found ${nodes.length} nodes`;
+    }
+
+    function updateNodeList() {
+      const list = document.getElementById('deviceList');
+      list.innerHTML = nodes.map(n => 
+        `<div style="cursor:pointer; padding:10px; background:${currentNode?.ip===n.ip?'#ff6b35':'#2a2a2a'}; margin:5px; border-radius:8px;" 
+             onclick="connectNode('${n.ip}')">
+          ${n.name} (${n.ip}) - ${n.packets} packets
+        </div>`
+      ).join('');
+    }
+
+    async function connectNode(ip = null) {
+      currentNode = ip ? { ip } : nodes[0];
+      if (!currentNode) return;
+      
+      try {
+        const res = await fetch(`${currentNode.ip}/scan`);
+        const data = await res.json();
+        document.getElementById('status').textContent = `Connected: ${currentNode.ip}`;
+        loadPackets();
+        loadDevices();
+      } catch(e) {
+        document.getElementById('status').textContent = 'Connection failed';
+      }
+    }
+
+    // LIVE DATA
+    async function loadPackets() {
+      if (!currentNode) return;
+      try {
+        const res = await fetch(`${currentNode.ip}/packets`);
+        packets = await res.json().packets;
+        updatePacketDisplay();
+        updateRSSIChart();
+      } catch(e) {}
+    }
+
+    async function loadDevices() {
+      if (!currentNode) return;
+      try {
+        const res = await fetch(`${currentNode.ip}/devices`);
+        devices = await res.json().devices;
+        document.getElementById('deviceCount').textContent = devices.length;
+        updateDeviceList();
+      } catch(e) {}
+    }
+
+    function updatePacketDisplay() {
+      document.getElementById('packets').innerHTML = packets.slice(0,20).map(p => 
+        `<div class="device ${p.device==='AirPods'?'active':''}">
+          ${p.device || 'Unknown'} ${p.rssi}db ${p.ch}ch<br>
+          <small>${p.addr} | ${p.data.slice(0,20)}...</small><br>
+          <button onclick="replayPacket('${p.addr}','${p.data}')">▶️ Replay</button>
+        </div>`
+      ).join('');
+    }
+
+    function updateDeviceList() {
+      document.getElementById('deviceList').innerHTML += 
+        `<h4>Auto-Discovered (${devices.length})</h4>` +
+        devices.map(d => 
+          `<div class="device ${d.active?'active':''}">
+            ${d.name} ${d.active?'🔴 LIVE':''} (conf:${d.conf})<br>
+            <small>${d.addr}</small><br>
+            <button onclick="replayDevice('${d.addr}','${d.sig}')">⚡ Force Control</button>
+          </div>`
+        ).join('');
+    }
+
+    function updateRSSIChart() {
+      const recent = packets.slice(0,50);
+      rssiChart.data.labels = recent.map((_,i) => i);
+      rssiChart.data.datasets[0].data = recent.map(p => p.rssi);
+      rssiChart.update('none');
+    }
+
+    // CONTROLS
+    async function toggleForceSweep() {
+      forceSweep = !forceSweep;
+      await fetch(`${currentNode.ip}/force`, { method: 'POST' });
+      document.getElementById('forceStatus').textContent = forceSweep ? 'ON' : 'OFF';
+      document.querySelector('button[onclick="toggleForceSweep()"]').classList.toggle('active', forceSweep);
+    }
+
+    async function replayPacket(addr, data) {
+      await fetch(`${currentNode.ip}/replay`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `addr=${addr}&data=${data}`
+      });
+    }
+
+    async function replayDevice(addr, sig) {
+      await replayPacket(addr, sig);
+    }
+
+    async function preset(type) {
+      const presets = {
+        airpods: { addr: '0xA0A0A0A0A0', data: '0102030405060708090A' },
+        rccar: { addr: '0xE7E7E7E7E7', data: 'FF010203' },
+        drone: { addr: '0xF1F1F1F1D1', data: '01000000' },
+        lock: { addr: '0xC2C2C2C2C2', data: 'AA550101' },
+        led: { addr: '0xE7E7E7E7E7', data: '01020304' }
+      };
+      await replayPacket(presets[type].addr, presets[type].data);
+    }
+
+    function clearAll() {
+      fetch(`${currentNode.ip}/clear`, { method: 'POST' });
+      packets = []; devices = [];
+      updatePacketDisplay();
+      updateDeviceList();
+    }
+
+    function exportDevices() {
+      const data = JSON.stringify(devices, null, 2);
+      const blob = new Blob([data], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'nrf24_devices.json';
+      a.click();
+    }
+
+    // AUTO REFRESH
+    setInterval(() => {
+      if (currentNode) {
+        loadPackets();
+        loadDevices();
+      }
+    }, 1000);
+
+    // STARTUP
+    discoverNodes();
+  </script>
+</body>
+</html>
