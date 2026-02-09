@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>🌐 nRF24 Universal Scanner Dashboard</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { 
+            font-family: 'JetBrains Mono', 'Courier New', monospace; 
+            margin: 0; padding: 0; box-sizing: border-box;
+        }
+        body { 
+            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 50%, #16213e 100%); 
+            color: #00ff41; 
+            min-height: 100vh; 
+            padding: 20px;
+        }
+        .header { 
+            text-align: center; 
+            margin-bottom: 30px; 
+            padding: 20px;
+            background: rgba(0,255,65,0.1);
+            border-radius: 12px;
+            border: 1px solid #00ff41;
+        }
+        .container { 
+            max-width: 1400px; 
+            margin: 0 auto; 
+            display: grid; 
+            grid-template-columns: 300px 1fr 350px; 
+            gap: 20px; 
+        }
+        .panel { 
+            background: rgba(20,20,40,0.8); 
+            padding: 20px; 
+            border-radius: 12px; 
+            border: 1px solid #333;
+            backdrop-filter: blur(10px);
+        }
+        .panel h3 { 
+            color: #00ff41; 
+            margin-bottom: 15px; 
+            display: flex; 
+            align-items: center; 
+            gap: 8px;
+        }
+        button { 
+            background: linear-gradient(45deg, #0066cc, #0088ff); 
+            color: white; 
+            border: none; 
+            padding: 12px 20px; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            margin: 5px; 
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+        button:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,102,204,0.4); }
+        button.active { background: linear-gradient(45deg, #00cc00, #00ff41); }
+        button.danger { background: linear-gradient(45deg, #cc0000, #ff3333); }
+        input, select { 
+            background: rgba(0,0,0,0.7); 
+            color: #00ff41; 
+            border: 1px solid #00ff41; 
+            padding: 12px; 
+            border-radius: 8px; 
+            margin: 5px;
+            width: 100%; 
+            font-family: inherit;
+        }
+        .node { 
+            background: rgba(0,255,65,0.1); 
+            padding: 12px; 
+            margin: 8px 0; 
+            border-radius: 8px; 
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .node:hover { background: rgba(0,255,65,0.2); }
+        .node.active { border: 2px solid #00ff41; box-shadow: 0 0 20px rgba(0,255,65,0.5); }
+        .packets { 
+            height: 400px; 
+            overflow-y: auto; 
+            font-size: 12px; 
+            background: rgba(0,0,0,0.3);
+            border-radius: 8px;
+            padding: 10px;
+        }
+        .packet { 
+            background: rgba(0,255,65,0.05); 
+            padding: 10px; 
+            margin: 6px 0; 
+            border-radius: 6px; 
+            border-left: 4px solid #00ff41;
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+        }
+        .chart-container { height: 250px; }
+        .status { 
+            padding: 8px; 
+            border-radius: 6px; 
+            margin: 5px 0; 
+            font-weight: 600;
+        }
+        .online { background: rgba(0,204,0,0.2); color: #00cc00; }
+        .offline { background: rgba(204,0,0,0.2); color: #cc0000; }
+        #log { height: 200px; overflow-y: auto; background: #000; padding: 10px; border-radius: 8px; font-size: 11px; }
+        @media (max-width: 1200px) { .container { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🛰️ nRF24 Universal Long-Range Scanner</h1>
+        <p>🔍 Auto-discovers ESP32 scanners • 📡 2km+ range • 🔄 Real-time capture & replay • 🌐 Zero config</p>
+        <div>Status: <span id="globalStatus">Scanning Network...</span></div>
+    </div>
+
+    <div class="container">
+        <div class="panel">
+            <h3>📡 Scanner Nodes</h3>
+            <div id="nodesList"></div>
+            <div style="margin-top:20px;">
+                <input id="manualIP" placeholder="192.168.x.x" style="width:100%;">
+                <button onclick="addManualNode()">➕ Add Scanner</button>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h3>📊 Live Packets <span id="packetCount">0</span></h3>
+            <div class="packets" id="packetsList"></div>
+            
+            <div style="margin-top:15px;">
+                <button onclick="clearPackets()" class="danger">🗑️ Clear All</button>
+                <button onclick="replayLast()" class="active">🔄 Replay Last</button>
+                <select id="channelSelect">
+                    <option value="76">CH 76 (Default)</option>
+                    <option value="2">CH 2</option>
+                    <option value="100">CH 100</option>
+                    <option value="125">CH 125</option>
+                </select>
+                <button onclick="setChannel()">📻 Set Channel</button>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h3>📈 RSSI Heatmap</h3>
+            <div class="chart-container">
+                <canvas id="rssiChart"></canvas>
+            </div>
+            <div style="margin-top:15px;">
+                <button onclick="startSweep()">🔍 Channel Sweep</button>
+                <button onclick="broadcastPing()">📤 Broadcast Ping</button>
+            </div>
+            
+            <h4 style="margin-top:20px;">📋 Command Log</h4>
+            <div id="log"></div>
+        </div>
+    </div>
+
+    <script>
+        // Global state
+        let nodes = {};
+        let allPackets = [];
+        let selectedNode = null;
+        let rssiChart = null;
+        let sweepInterval = null;
+
+        // Auto-discovery + manual scanner URLs
+        const scannerEndpoints = [
+            '/scan', '/packets', '/replay', '/channel', '/clear'
+        ];
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            initChart();
+            discoverScanners();
+            setInterval(discoverScanners, 5000); // Auto-scan network
+            setInterval(updateDashboard, 1000);
+        });
+
+        function initChart() {
+            const ctx = document.getElementById('rssiChart').getContext('2d');
+            rssiChart = new Chart(ctx, {
+                type: 'line',
+                data: { labels: [], datasets: [{ label: 'RSSI', data: [], borderColor: '#00ff41', tension: 0.4 }] },
+                options: { responsive: true, maintainAspectRatio: false, scales: { y: { min: 0, max: 100 } } }
+            });
+        }
+
+        async function discoverScanners() {
+            log('🔍 Network scan for ESP32 scanners...');
+            
+            // Scan common IP ranges (auto-discovers your network)
+            const ipRanges = ['192.168.', '10.0.', '172.16.', '172.17.', '172.18.', '172.19.'];
+            const promises = [];
+            
+            for (let range of ipRanges) {
+                for (let i = 1; i <= 254; i++) {
+                    const ip = range + i;
+                    promises.push(checkNode(ip));
+                }
+            }
+            
+            const results = await Promise.all(promises.slice(0, 100)); // Limit concurrent
+            updateNodesList();
+            log(`${Object.keys(nodes).length} scanners found!`);
+        }
+
+        async function checkNode(ip) {
+            try {
+                const response = await fetch(`http://${ip}/scan`, { timeout: 2000 });
+                if (response.ok) {
+                    const data = await response.json();
+                    nodes[ip] = {
+                        id: data.node || ip,
+                        status: 'online',
+                        packets: data.packets || 0,
+                        rssi: data.rssi || 0,
+                        channel: data.channel || 76,
+                        lastSeen: Date.now()
+                    };
+                }
+            } catch(e) {
+                // Node offline or not scanner
+            }
+        }
+
+        function updateNodesList() {
+            const list = document.getElementById('nodesList');
+            list.innerHTML = '';
+            
+            Object.entries(nodes).forEach(([ip, node]) => {
+                const div = document.createElement('div');
+                div.className = `node ${selectedNode === ip ? 'active' : ''}`;
+                div.innerHTML = `
+                    <div><strong>${node.id}</strong> (${ip})</div>
+                    <div>📦 ${node.packets} pkts | 📡 CH${node.channel} | ${node.rssi}dBm</div>
+                    <div class="status ${node.status}">${node.status.toUpperCase()}</div>
+                `;
+                div.onclick = () => selectNode(ip);
+                list.appendChild(div);
+            });
+        }
+
+        function selectNode(ip) {
+            selectedNode = ip;
+            document.querySelectorAll('.node').forEach(n => n.classList.remove('active'));
+            updateNodesList();
+            log(`📡 Selected node: ${ip}`);
+        }
+
+        async function updateDashboard() {
+            if (!selectedNode) return;
+            
+            try {
+                const resp = await fetch(`http://${selectedNode}/packets`);
+                const data = await resp.json();
+                
+                allPackets = data.packets || [];
+                document.getElementById('packetCount').textContent = allPackets.length;
+                updatePacketsList();
+                updateRSSIChart();
+            } catch(e) {
+                log('❌ Node disconnected');
+            }
+        }
+
+        function updatePacketsList() {
+            const list = document.getElementById('packetsList');
+            list.innerHTML = allPackets.map(pkt => `
+                <div class="packet">
+                    <strong>${pkt.addr}</strong> | ${pkt.len}B | 📡${pkt.ch} | ${pkt.rssi}% RSSI<br>
+                    <code>${pkt.data.slice(0,16).join(' ')}</code>
+                    <button onclick="replayPacket('${pkt.addr}', '${pkt.data.join('')}', ${pkt.len})" style="float:right;font-size:10px;padding:4px 8px;">🔄 Replay</button>
+                </div>
+            `).join('');
+        }
+
+        function updateRSSIChart() {
+            if (allPackets.length === 0) return;
+            const recent = allPackets.slice(-20);
+            rssiChart.data.labels = recent.map((_, i) => i);
+            rssiChart.data.datasets[0].data = recent.map(p => p.rssi);
+            rssiChart.update('none');
+        }
+
+        async function replayPacket(addr, dataHex, len) {
+            if (!selectedNode) return log('❌ No node selected');
+            
+            const formData = new FormData();
+            formData.append('addr', addr);
+            formData.append('data', dataHex);
+            
+            await fetch(`http://${selectedNode}/replay`, { method: 'POST', body: formData });
+            log(`🔄 Replayed: ${addr}`);
+        }
+
+        async function replayLast() {
+            if (allPackets.length > 0) {
+                const last = allPackets[allPackets.length - 1];
+                await replayPacket(last.addr, last.data.join(''), last.len);
+            }
+        }
+
+        async function setChannel() {
+            if (!selectedNode) return;
+            const ch = document.getElementById('channelSelect').value;
+            await fetch(`http://${selectedNode}/channel?ch=${ch}`, { method: 'POST' });
+            log(`📻 Channel set to ${ch}`);
+        }
+
+        async function clearPackets() {
+            if (!selectedNode) return;
+            await fetch(`http://${selectedNode}/clear`, { method: 'POST' });
+            allPackets = [];
+            log('🗑️ Packets cleared');
+        }
+
+        async function addManualNode() {
+            const ip = document.getElementById('manualIP').value.trim();
+            if (!ip) return;
+            
+            await checkNode(ip);
+            updateNodesList();
+            log(`➕ Added manual scanner: ${ip}`);
+        }
+
+        async function scanAll() {
+            log('🔍 Starting channel sweep...');
+            for (let ch = 0; ch <= 125; ch += 10) {
+                if (selectedNode) {
+                    await fetch(`http://${selectedNode}/channel?ch=${ch}`, { method: 'POST' });
+                    await new Promise(r => setTimeout(r, 500));
+                }
+            }
+            log('✅ Sweep complete');
+        }
+
+        async function broadcastPing() {
+            log('📤 Broadcasting ping to common addresses...');
+            const common = ['E7E7E7E7E7', 'C2C2C2C2C2', 'F1F1F1F1D1'];
+            for (let addr of common) {
+                await replayPacket(addr, 'DEADBEEF', 4);
+                await new Promise(r => setTimeout(r, 100));
+            }
+        }
+
+        function log(message) {
+            const logDiv = document.getElementById('log');
+            logDiv.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${message}</div>`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+            document.getElementById('globalStatus').textContent = message;
+        }
+    </script>
+</body>
+</html>
